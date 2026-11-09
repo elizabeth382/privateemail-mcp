@@ -12,9 +12,9 @@ const EMAIL_PASS = process.env.EMAIL_PASS;           // your mailbox password
 const MCP_SECRET = process.env.MCP_SECRET;           // random string you make up (acts like a password for the connector URL)
 const PORT = process.env.PORT || 3000;
 
-const IMAP_HOST = "mail.privateemail.com";
+const IMAP_HOST = "imap.privateemail.com";
 const IMAP_PORT = 993;
-const SMTP_HOST = "mail.privateemail.com";
+const SMTP_HOST = "smtp.privateemail.com";
 const SMTP_PORT = 465;
 
 if (!EMAIL_USER || !EMAIL_PASS || !MCP_SECRET) {

@@ -31,7 +31,12 @@ async function withImap(fn) {
     auth: { user: EMAIL_USER, pass: EMAIL_PASS },
     logger: false,
   });
-  await client.connect();
+       try {
+       await client.connect();
+     } catch (err) {
+       console.error("IMAP connect failed:", err.responseText || err.message, err.authenticationFailed ? "(authentication failed)" : "");
+       throw err;
+     }
   try {
     return await fn(client);
   } finally {

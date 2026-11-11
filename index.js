@@ -36,6 +36,61 @@ function explain(err, stage) {
   return new Error(`${stage} error: ${err.message}${detail ? ` (server said: ${detail})` : ""}`);
 }
 
+// ---- Helpers for read_email: readable text + attachment list ----
+const MAX_BODY_CHARS = 20000;
+
+// Walk the IMAP body structure: pick the first plain-text and HTML parts,
+// and list everything that looks like an attachment.
+function walkParts(node, out) {
+  if (node.childNodes && node.childNodes.length) {
+    for (const child of node.childNodes) walkParts(child, out);
+    return out;
+  }
+  const part = node.part || "1"; // single-part messages have no part number
+  const type = (node.type || "").toLowerCase();
+  const filename = node.dispositionParameters?.filename || node.parameters?.name;
+  const isAttachment =
+    (node.disposition || "").toLowerCase() === "attachment" || (filename && !type.startsWith("text/"));
+  if (isAttachment) {
+    out.attachments.push({ filename: filename || "(unnamed)", type, size: node.size || null });
+  } else if (type === "text/plain" && !out.plain) {
+    out.plain = part;
+  } else if (type === "text/html" && !out.html) {
+    out.html = part;
+  }
+  return out;
+}
+
+async function downloadText(client, uid, part) {
+  const { content } = await client.download(uid, part, { uid: true }); // decoded + converted to UTF-8
+  const chunks = [];
+  for await (const chunk of content) chunks.push(chunk);
+  return Buffer.concat(chunks).toString("utf-8");
+}
+
+function htmlToText(html) {
+  return html
+    .replace(/<(script|style|head|title)[^>]*>[\s\S]*?<\/\1>/gi, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|tr|li|h[1-6]|table|blockquote)>/gi, "\n")
+    .replace(/<li[^>]*>/gi, "• ")
+    .replace(/<a\s[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (m, href, text) => {
+      const label = text.replace(/<[^>]+>/g, "").trim();
+      return href.startsWith("mailto:") || !label || label === href ? label || href : `${label} (${href})`;
+    })
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (m, n) => String.fromCodePoint(Number(n)))
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 // ---- Helper: run a function with a connected IMAP client, then clean up ----
 async function withImap(fn) {
   const client = new ImapFlow({
@@ -162,7 +217,7 @@ server.tool(
 
 server.tool(
   "read_email",
-  "Fetch the full content of a single email by its UID (from search_emails results).",
+  "Fetch a single email by its UID (from search_emails results): sender, recipients, date, subject, the readable body text (HTML emails are converted to plain text), and a list of attachments (name, type, size).",
   {
     uid: z.number().int().describe("The email UID from search_emails"),
     folder: z.string().optional().describe("Mailbox folder, defaults to INBOX"),
@@ -175,17 +230,30 @@ server.tool(
       try {
         const msg = await client.fetchOne(
           uid,
-          { envelope: true, source: true, uid: true },
+          { envelope: true, bodyStructure: true, uid: true },
           { uid: true }
         );
         if (!msg) return null;
+
+        const parts = walkParts(msg.bodyStructure || {}, { plain: null, html: null, attachments: [] });
+        let body = "(no readable text in this email)";
+        if (parts.plain) body = (await downloadText(client, uid, parts.plain)).trim();
+        else if (parts.html) body = htmlToText(await downloadText(client, uid, parts.html));
+        if (body.length > MAX_BODY_CHARS) {
+          body = body.slice(0, MAX_BODY_CHARS) + `\n\n[…truncated — email is ${body.length} characters long]`;
+        }
+
+        const fmt = (list) =>
+          (list || []).map((a) => (a.name ? `${a.name} <${a.address}>` : a.address)).join(", ");
         return {
           uid: msg.uid,
           subject: msg.envelope?.subject || "(no subject)",
-          from: msg.envelope?.from?.map((a) => a.address).join(", ") || "(unknown)",
-          to: msg.envelope?.to?.map((a) => a.address).join(", ") || "",
+          from: fmt(msg.envelope?.from) || "(unknown)",
+          to: fmt(msg.envelope?.to),
+          cc: fmt(msg.envelope?.cc) || undefined,
           date: msg.envelope?.date || null,
-          body: msg.source ? msg.source.toString("utf-8") : "(no content)",
+          attachments: parts.attachments,
+          body,
         };
       } finally {
         lock.release();

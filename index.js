@@ -12,14 +12,28 @@ const EMAIL_PASS = process.env.EMAIL_PASS;           // your mailbox password
 const MCP_SECRET = process.env.MCP_SECRET;           // random string you make up (acts like a password for the connector URL)
 const PORT = process.env.PORT || 3000;
 
-const IMAP_HOST = "imap.privateemail.com";
+// Namecheap documents mail.privateemail.com for both IMAP and SMTP.
+const IMAP_HOST = process.env.IMAP_HOST || "mail.privateemail.com";
 const IMAP_PORT = 993;
-const SMTP_HOST = "smtp.privateemail.com";
+const SMTP_HOST = process.env.SMTP_HOST || "mail.privateemail.com";
 const SMTP_PORT = 465;
 
 if (!EMAIL_USER || !EMAIL_PASS || !MCP_SECRET) {
   console.error("Missing required environment variables: EMAIL_USER, EMAIL_PASS, MCP_SECRET");
   process.exit(1);
+}
+
+// ---- Helper: turn imapflow's bare "Command failed" into a useful message ----
+// The server's actual reason lives in err.responseText / err.serverResponseCode,
+// which the MCP SDK would otherwise drop, leaving Claude with only "Command failed".
+function explain(err, stage) {
+  if (err.authenticationFailed) {
+    return new Error(
+      `${stage}: login rejected by ${IMAP_HOST} — check EMAIL_USER (full address) and EMAIL_PASS on Render. Server said: ${err.responseText || err.message}`
+    );
+  }
+  const detail = [err.serverResponseCode, err.responseText].filter(Boolean).join(" ");
+  return new Error(`${stage} error: ${err.message}${detail ? ` (server said: ${detail})` : ""}`);
 }
 
 // ---- Helper: run a function with a connected IMAP client, then clean up ----
@@ -31,14 +45,17 @@ async function withImap(fn) {
     auth: { user: EMAIL_USER, pass: EMAIL_PASS },
     logger: false,
   });
-       try {
-       await client.connect();
-     } catch (err) {
-       console.error("IMAP connect failed:", err.responseText || err.message, err.authenticationFailed ? "(authentication failed)" : "");
-       throw err;
-     }
+  try {
+    await client.connect();
+  } catch (err) {
+    console.error("IMAP connect failed:", err.responseText || err.message, err.authenticationFailed ? "(authentication failed)" : "");
+    throw explain(err, "IMAP connect");
+  }
   try {
     return await fn(client);
+  } catch (err) {
+    console.error("IMAP command failed:", err.responseText || err.message);
+    throw explain(err, "IMAP");
   } finally {
     await client.logout().catch(() => {});
   }
@@ -91,6 +108,9 @@ async function sendAndArchive(mailOptions) {
 }
 
 // ---- MCP server + tools ----
+// A fresh server per request (the SDK's recommended stateless pattern), so one
+// request finishing can't close the transport out from under another.
+function buildServer() {
 const server = new McpServer({ name: "privateemail-mcp", version: "1.0.0" });
 
 server.tool(
@@ -250,6 +270,9 @@ server.tool(
   }
 );
 
+return server;
+}
+
 // ---- HTTP wiring (stateless Streamable HTTP, one transport per request) ----
 const app = express();
 app.use(express.json());
@@ -258,8 +281,12 @@ app.use(express.json());
 // since anyone who reaches this URL can call the tools above.
 app.post(`/mcp/${MCP_SECRET}`, async (req, res) => {
   try {
+    const server = buildServer();
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-    res.on("close", () => transport.close());
+    res.on("close", () => {
+      transport.close();
+      server.close();
+    });
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
   } catch (err) {
@@ -267,6 +294,17 @@ app.post(`/mcp/${MCP_SECRET}`, async (req, res) => {
     if (!res.headersSent) res.status(500).json({ error: "Internal server error" });
   }
 });
+
+// Stateless server: no standalone SSE stream or sessions to delete. Per the MCP
+// spec, answer 405 so clients fall back cleanly instead of treating it as an error.
+const methodNotAllowed = (req, res) =>
+  res.status(405).set("Allow", "POST").json({
+    jsonrpc: "2.0",
+    error: { code: -32000, message: "Method not allowed." },
+    id: null,
+  });
+app.get(`/mcp/${MCP_SECRET}`, methodNotAllowed);
+app.delete(`/mcp/${MCP_SECRET}`, methodNotAllowed);
 
 app.get("/", (req, res) => res.send("privateemail-mcp is running"));
 

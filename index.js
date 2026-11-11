@@ -69,7 +69,7 @@ async function downloadText(client, uid, part) {
 }
 
 function htmlToText(html) {
-  return html
+  const text = html
     .replace(/<(script|style|head|title)[^>]*>[\s\S]*?<\/\1>/gi, "")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/(p|div|tr|li|h[1-6]|table|blockquote)>/gi, "\n")
@@ -86,7 +86,18 @@ function htmlToText(html) {
     .replace(/&quot;/gi, '"')
     .replace(/&#39;|&apos;/gi, "'")
     .replace(/&#(\d+);/g, (m, n) => String.fromCodePoint(Number(n)))
-    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\r/g, "");
+  return tidy(text);
+}
+
+// Trim every line and collapse runs of blank lines (HTML emails are full of
+// indentation and empty layout rows).
+function tidy(text) {
+  return text
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -237,7 +248,7 @@ server.tool(
 
         const parts = walkParts(msg.bodyStructure || {}, { plain: null, html: null, attachments: [] });
         let body = "(no readable text in this email)";
-        if (parts.plain) body = (await downloadText(client, uid, parts.plain)).trim();
+        if (parts.plain) body = tidy(await downloadText(client, uid, parts.plain));
         else if (parts.html) body = htmlToText(await downloadText(client, uid, parts.html));
         if (body.length > MAX_BODY_CHARS) {
           body = body.slice(0, MAX_BODY_CHARS) + `\n\n[…truncated — email is ${body.length} characters long]`;

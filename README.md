@@ -20,7 +20,8 @@ Only addresses at `ALLOWED_EMAIL_DOMAIN` can connect. Tokens last one hour and r
 
    | Variable | Value |
    |---|---|
-   | `BASE_URL` | The service's address, e.g. `https://privateemail-mcp.onrender.com` (no slash at the end) |
+   | `BASE_URL` | The firm address the server runs on, e.g. `https://claude-mail.thomasfamilylawcounsel.com` (no slash at the end). Requests to any other address are redirected here. |
+   | `FIRM_NAME` | `Thomas Law Group, P.C.` (shown on the sign-in page) |
    | `ENCRYPTION_KEY` | Click **Generate**. Never change it; changing it means everyone must reconnect. |
    | `ALLOWED_EMAIL_DOMAIN` | `thomasfamilylawcounsel.com` |
    | `UPSTASH_REDIS_REST_URL` | From Upstash (the same database as the OneDrive connector is fine) |
@@ -29,12 +30,16 @@ Only addresses at `ALLOWED_EMAIL_DOMAIN` can connect. Tokens last one hour and r
    **Delete** the old `EMAIL_USER`, `EMAIL_PASS` and `MCP_SECRET` variables. They are no longer used.
 3. Save. Render redeploys. Opening `BASE_URL` should show "privateemail-mcp is running".
 4. In Claude, **Organization settings → Connectors**: remove the old PrivateEmail connector, then **Add → Custom connector**:
-   - **URL:** `BASE_URL/mcp` (e.g. `https://privateemail-mcp.onrender.com/mcp`)
+   - **URL:** `BASE_URL/mcp` (e.g. `https://claude-mail.thomasfamilylawcounsel.com/mcp`)
    - **Authentication:** Sign in now
    - **OAuth client:** Register automatically
 5. Each person (including you) then goes to **Settings → Connectors**, clicks **Connect** on PrivateEmail and signs in with their own mailbox.
 
 The old `/mcp/<secret>` address now returns "retired" and no longer works.
+
+## Why a firm address
+
+The sign-in page asks for a mailbox password. On a generic hosting address (especially one containing "privateemail") Google Safe Browsing classifies that as phishing and Chrome blocks it. Run the server on a subdomain of the firm's own domain (Render → Settings → Custom Domains, plus a CNAME record at Namecheap) so staff sign in on an address they recognise.
 
 ## Troubleshooting
 

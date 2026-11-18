@@ -14,6 +14,7 @@ import { createStore, createVault, createProvider, checkAllowed, escapeHtml } fr
 const BASE_URL = (process.env.BASE_URL || "").replace(/\/$/, "");   // e.g. https://privateemail-mcp.onrender.com
 const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;                   // long random string; encrypts stored mailbox passwords
 const ALLOWED_EMAIL_DOMAIN = process.env.ALLOWED_EMAIL_DOMAIN || ""; // e.g. thomasfamilylawcounsel.com
+const FIRM_NAME = process.env.FIRM_NAME || "";                      // shown on the sign-in page, e.g. Thomas Law Group, P.C.
 const PORT = process.env.PORT || 3000;
 
 // Read-only connector: it only reads mail over IMAP and never sends.
@@ -266,6 +267,16 @@ return server;
 // ---- HTTP wiring (stateless Streamable HTTP, one transport per request) ----
 const app = express();
 app.set("trust proxy", 1); // Render sits in front of us; needed for correct client IPs and rate limits
+
+// Serve everything from BASE_URL's address only. Requests that arrive on any
+// other address (e.g. the original *.onrender.com one) are sent to BASE_URL,
+// so nobody signs in on an address other than the firm's own.
+const CANONICAL_HOST = new URL(BASE_URL).hostname;
+app.use((req, res, next) => {
+  if (req.hostname === CANONICAL_HOST || (req.method === "GET" && req.path === "/")) return next();
+  res.redirect(308, BASE_URL + req.originalUrl);
+});
+
 app.use(express.json());
 
 // ---- Sign-in: Claude's "Connect" button runs OAuth against this server ----
@@ -277,7 +288,7 @@ function loginPage({ pending, email = "", error = "" }) {
     ? `Use your <b>@${escapeHtml(ALLOWED_EMAIL_DOMAIN.split(",")[0].trim())}</b> address.`
     : "Use your full email address.";
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Connect your mailbox</title>
+<title>${FIRM_NAME ? escapeHtml(FIRM_NAME) + " · " : ""}Connect Claude to your mailbox</title>
 <style>
 :root{color-scheme:light dark;--bg:#f6f5f2;--card:#fff;--ink:#1f1e1c;--muted:#6b6862;--line:#d9d6cf;--accent:#1f5f8b;--err:#a3322a}
 @media (prefers-color-scheme:dark){:root{--bg:#1b1a19;--card:#262523;--ink:#ecebe8;--muted:#a19e97;--line:#3d3b38;--accent:#6aa9d6;--err:#e58a82}}
@@ -288,8 +299,10 @@ label{display:block;font-size:14px;font-weight:600;margin:14px 0 6px}
 input{width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink);font:inherit}
 button{margin-top:20px;width:100%;padding:11px;border:0;border-radius:8px;background:var(--accent);color:#fff;font:inherit;font-weight:600;cursor:pointer}
 .err{color:var(--err);font-size:14px;margin:12px 0 0}.fine{font-size:12.5px;margin:16px 0 0}
+.firm{font-size:13px;font-weight:600;letter-spacing:.02em;color:var(--accent);margin:0 0 10px}
 </style></head><body><main>
-<h1>Connect your mailbox to Claude</h1>
+${FIRM_NAME ? `<div class="firm">${escapeHtml(FIRM_NAME)}</div>` : ""}
+<h1>Connect Claude to your mailbox</h1>
 <p>Sign in with <b>your own</b> work mailbox. Claude will be able to search and read only this mailbox. It cannot send, delete or change anything. ${domainNote}</p>
 <form method="post" action="/login">
 <input type="hidden" name="pending" value="${escapeHtml(pending)}">
